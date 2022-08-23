@@ -8,7 +8,7 @@
 #include <RingBuf.h>
 #include <Servo.h>
 
-WiFiClient esp_client;
+BearSSL::WiFiClientSecure esp_client;
 PubSubClient client(esp_client);
 RingBuf<char, 300> actions_buffer;
 
@@ -22,7 +22,6 @@ unsigned long hold_until = 0;
 int desired_angle;
 
 void setupWifi() {
-
   delay(10);
   // We start by connecting to a WiFi network
   Serial.println();
@@ -43,6 +42,31 @@ void setupWifi() {
   Serial.println("WiFi connected");
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
+}
+
+void setupClock()
+{
+  configTime(3 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+  Serial.print("Waiting for NTP time sync: ");
+  time_t now = time(nullptr);
+  while (now < 8 * 3600 * 2) {
+    delay(500);
+    Serial.print(".");
+    now = time(nullptr);
+  }
+  Serial.println("");
+  struct tm timeinfo;
+  gmtime_r(&now, &timeinfo);
+  Serial.print("Current time: ");
+  Serial.print(asctime(&timeinfo));
+}
+
+void setupTls(esp_client) {
+  BearSSL::X509List *serverTrustedCA = new BearSSL::X509List(SECRETS_CA_CERT);
+  BearSSL::X509List *serverCertList = new BearSSL::X509List(SECRETS_CLIENT_CERT);
+  BearSSL::PrivateKey *serverPrivateKey = new BearSSL::PrivateKey(SECRETS_CLIENT_PRIVATE_KEY);
+  esp_client.setTrustAnchors(serverTrustedCA);
+  esp_client.setClientRSACert(serverCertList, serverPrivateKey);
 }
 
 void callback(char *topic, byte *payload, unsigned int length) {
@@ -175,8 +199,10 @@ void printBuffer() {
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT); // Initialize the LED_BUILTIN pin as an output
   Serial.begin(115200);
+  setupTls(esp_client);
   setupWifi();
-  client.setServer(SECRETS_MQTT_SERVER, 1883);
+  setupClock();
+  client.setServer(SECRETS_MQTT_SERVER, SECRETS_MQTT_SERVER_PORT);
   client.setCallback(callback);
 }
 
