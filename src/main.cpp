@@ -8,7 +8,13 @@
 #include <RingBuf.h>
 #include <Servo.h>
 
+#ifdef SECURE
 BearSSL::WiFiClientSecure esp_client;
+#endif
+#ifndef SECURE
+WiFiClient esp_client;
+#endif
+
 PubSubClient client(esp_client);
 RingBuf<char, 300> actions_buffer;
 
@@ -39,13 +45,13 @@ void setupWifi() {
   randomSeed(micros());
 
   Serial.println("");
-  Serial.println("WiFi connected");
+  Serial.println("WiFi connected:");
+  Serial.println(SECRETS_WIFI_SSID);
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
 }
 
-void setupClock()
-{
+void setupClock() {
   configTime(3 * 3600, 0, "pool.ntp.org", "time.nist.gov");
   Serial.print("Waiting for NTP time sync: ");
   time_t now = time(nullptr);
@@ -61,7 +67,7 @@ void setupClock()
   Serial.print(asctime(&timeinfo));
 }
 
-void setupTls(esp_client) {
+void setupTls(BearSSL::WiFiClientSecure esp_client) {
   BearSSL::X509List *serverTrustedCA = new BearSSL::X509List(SECRETS_CA_CERT);
   BearSSL::X509List *serverCertList = new BearSSL::X509List(SECRETS_CLIENT_CERT);
   BearSSL::PrivateKey *serverPrivateKey = new BearSSL::PrivateKey(SECRETS_CLIENT_PRIVATE_KEY);
@@ -90,7 +96,7 @@ void reconnect() {
     String client_id = "ESP8266Client-";
     client_id += String(random(0xffff), HEX);
     // Attempt to connect
-    if (client.connect(client_id.c_str(), SECRETS_MQTT_STATUS_TOPIC, 0, false, "-1")) {
+    if (client.connect(client_id.c_str(), SECRETS_MQTT_USERNAME, SECRETS_MQTT_PASSWORD, SECRETS_MQTT_STATUS_TOPIC, 0, false, "-1")) {
       Serial.println("connected");
       // Once connected, publish an announcement...
       client.publish(SECRETS_MQTT_STATUS_TOPIC, "1");
