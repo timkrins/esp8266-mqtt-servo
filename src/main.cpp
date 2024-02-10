@@ -3,7 +3,7 @@
 */
 
 #include "secrets.h"
-#include <ESP8266WiFi.h>
+#include <ESP8266WiFiMulti.h>
 #include <PubSubClient.h>
 #include <RingBuf.h>
 #include <Servo.h>
@@ -15,43 +15,49 @@ BearSSL::WiFiClientSecure esp_client;
 WiFiClient esp_client;
 #endif
 
+ESP8266WiFiMulti wifiMulti;
 PubSubClient client(esp_client);
 RingBuf<char, 300> actions_buffer;
 
 #define SERVO_PIN D0
 Servo servo;
 
-#define MIN_ANGLE 0
+#define MIN_ANGLE -100
 #define MAX_ANGLE 100
 
+unsigned long clock_set = 0;
 unsigned long hold_until = 0;
 int desired_angle;
 
+// WiFi connect timeout per AP. Increase when connecting takes longer.
+const uint32_t connectTimeoutMs = 5000;
+
 void setupWifi() {
   delay(10);
+  // Don't save WiFi configuration in flash - optional
+  WiFi.persistent(false);
+
+  // Set WiFi to station mode
+  WiFi.mode(WIFI_STA);
+
   // We start by connecting to a WiFi network
   Serial.println();
-  Serial.print("Connecting to ");
-  Serial.println(SECRETS_WIFI_SSID);
+  Serial.print("Connecting to Wifi");
 
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(SECRETS_WIFI_SSID, SECRETS_WIFI_PASSWORD);
-
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
+  // Register multi WiFi networks
+  wifiMulti.addAP(SECRETS_WIFI_SSID_1, SECRETS_WIFI_PASSWORD_1);
+  wifiMulti.addAP(SECRETS_WIFI_SSID_2, SECRETS_WIFI_PASSWORD_2);
+  wifiMulti.addAP(SECRETS_WIFI_SSID_3, SECRETS_WIFI_PASSWORD_3);
 
   randomSeed(micros());
 
-  Serial.println("");
-  Serial.println("WiFi connected:");
-  Serial.println(SECRETS_WIFI_SSID);
-  Serial.println("IP address: ");
-  Serial.println(WiFi.localIP());
+  wifiMulti.run(connectTimeoutMs);
 }
 
 void setupClock() {
+  if (clock_set) {
+    return;
+  }
   configTime(3 * 3600, 0, "pool.ntp.org", "time.nist.gov");
   Serial.print("Waiting for NTP time sync: ");
   time_t now = time(nullptr);
@@ -65,8 +71,10 @@ void setupClock() {
   gmtime_r(&now, &timeinfo);
   Serial.print("Current time: ");
   Serial.print(asctime(&timeinfo));
+  clock_set = 1;
 }
 
+#ifdef SECURE
 void setupTls(BearSSL::WiFiClientSecure esp_client) {
   BearSSL::X509List *serverTrustedCA = new BearSSL::X509List(SECRETS_CA_CERT);
   BearSSL::X509List *serverCertList = new BearSSL::X509List(SECRETS_CLIENT_CERT);
@@ -74,6 +82,7 @@ void setupTls(BearSSL::WiFiClientSecure esp_client) {
   esp_client.setTrustAnchors(serverTrustedCA);
   esp_client.setClientRSACert(serverCertList, serverPrivateKey);
 }
+#endif
 
 void callback(char *topic, byte *payload, unsigned int length) {
   String payload_string = "<callback topic=\"" + String(topic) + ">";
@@ -96,12 +105,12 @@ void reconnect() {
     String client_id = "ESP8266Client-";
     client_id += String(random(0xffff), HEX);
     // Attempt to connect
-    if (client.connect(client_id.c_str(), SECRETS_MQTT_USERNAME, SECRETS_MQTT_PASSWORD, SECRETS_MQTT_STATUS_TOPIC, 0, false, "-1")) {
+    if (client.connect(client_id.c_str(), SECRETS_MQTT_USERNAME, SECRETS_MQTT_PASSWORD, SECRETS_MQTT_TOPIC_ALIVE, 0, false, "0")) {
       Serial.println("connected");
       // Once connected, publish an announcement...
-      client.publish(SECRETS_MQTT_STATUS_TOPIC, "1");
+      client.publish(SECRETS_MQTT_TOPIC_ALIVE, "1");
       // ... and resubscribe
-      client.subscribe(SECRETS_MQTT_SUBSCRIBE_TOPIC);
+      client.subscribe(SECRETS_MQTT_TOPIC_CONTROL);
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
@@ -205,19 +214,27 @@ void printBuffer() {
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT); // Initialize the LED_BUILTIN pin as an output
   Serial.begin(115200);
+#ifdef SECURE
   setupTls(esp_client);
+#endif
   setupWifi();
-  setupClock();
   client.setServer(SECRETS_MQTT_SERVER, SECRETS_MQTT_SERVER_PORT);
   client.setCallback(callback);
 }
 
 void loop() {
-  if (!client.connected()) {
-    reconnect();
+  // Maintain WiFi connection
+  if (wifiMulti.run(connectTimeoutMs) == WL_CONNECTED) {
+    setupClock();
+    if (!client.connected()) {
+      reconnect();
+    }
+    client.loop();
+    printBuffer();
+    process();
+    holdOrAngle();
+  } else {
+    Serial.println("WiFi not connected!");
+    delay(1000);
   }
-  client.loop();
-  printBuffer();
-  process();
-  holdOrAngle();
 }
